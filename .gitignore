@@ -3,8 +3,8 @@ Makefile
 Makefile.Debug
 Makefile.Release
 *.o
-externalIkDemo1
-externalIkDemo1.exe
+standAloneKinematicsDemo1
+standAloneKinematicsDemo1.exe
 Makefile.Debug
 Makefile.Release
 object_script.*.Debug
