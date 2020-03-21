@@ -10,7 +10,6 @@ DEFINES -= UNICODE
 CONFIG   += console
 CONFIG   -= app_bundle
 
-#DEFINES += IK_DOUBLE # for double-precision
 #DEFINES += SIM_MATH_DOUBLE # for double-precision
 DEFINES += NON_MATLAB_PARSING
 DEFINES += MAX_EXT_API_CONNECTIONS=255

@@ -4,6 +4,7 @@
 #include <string.h>
 #include <string>
 #include <vector>
+#include "7Vector.h"
 
 extern "C" {
     #include "extApi.h"
@@ -13,7 +14,7 @@ extern "C" {
 
 void prepareShapeNames(std::vector<std::string>& shapeNames)
 {   // Prepare a vector with all the shape names in the robot (except for the fixed shape, i.e. the base shape)).
-    // The names in the external IK file and the names in the CoppeliaSim scene should be the same:
+    // The names in the exported IK file and the names in the CoppeliaSim scene should be the same:
     shapeNames.clear();
     shapeNames.push_back("irb360_arm");
     shapeNames.push_back("irb360_arm0");
@@ -82,55 +83,51 @@ int getSimHandles(int clientID,const std::vector<std::string>& shapeNames,std::v
     return(baseHandle);
 }
 
-void switchToFk(const int* embMotorHandles,int embMainIkGroup,int embTip)
-{   // Here we switch the external IK robot to FK mode.
+void switchToFk(const int* motorHandles,int mainIkGroup,int tipHandle)
+{   // Here we switch the robot to FK mode.
 
     // 1. We want the robot motors NOT to be part of IK resolution:
-    ikSetJointMode(embMotorHandles[0],sim_jointmode_passive);
-    ikSetJointMode(embMotorHandles[1],sim_jointmode_passive);
-    ikSetJointMode(embMotorHandles[2],sim_jointmode_passive);
+    ikSetJointMode(motorHandles[0],ik_jointmode_passive);
+    ikSetJointMode(motorHandles[1],ik_jointmode_passive);
+    ikSetJointMode(motorHandles[2],ik_jointmode_passive);
 
     // 2. We disable the IK element that handles the position of the tip (since we are in FK mode):
-    ikSetIkElementProperties(embMainIkGroup,embTip,0,NULL,NULL); // i.e. no constraints for that element
+    ikSetIkElementConstraints(mainIkGroup,tipHandle|ik_handleflag_tipdummy,0); // i.e. no constraints for that element
 }
 
-void switchToIk(const int* embMotorHandles,int embMainIkGroup,int embTip,int embTarget)
-{   // Here we switch the external IK robot to IK mode.
+void switchToIk(const int* motorHandles,int mainIkGroup,int tipHandle,int targetHandle)
+{   // Here we switch the robot to IK mode.
 
     // 1. We want the robot motors to be part of IK resolution:
-    ikSetJointMode(embMotorHandles[0],sim_jointmode_ik);
-    ikSetJointMode(embMotorHandles[1],sim_jointmode_ik);
-    ikSetJointMode(embMotorHandles[2],sim_jointmode_ik);
+    ikSetJointMode(motorHandles[0],ik_jointmode_ik);
+    ikSetJointMode(motorHandles[1],ik_jointmode_ik);
+    ikSetJointMode(motorHandles[2],ik_jointmode_ik);
 
     // 2. We enable the IK element that handles the position of the tip (since we are in IK mode):
-    ikSetIkElementProperties(embMainIkGroup,embTip,sim_ik_x_constraint|sim_ik_y_constraint|sim_ik_z_constraint,NULL,NULL); // i.e. that element is constrained in x/y/z position
+    ikSetIkElementConstraints(mainIkGroup,tipHandle|ik_handleflag_tipdummy,ik_constraint_position); // i.e. that element is constrained in x/y/z position
 
     // 3. We make sure the target is at the same position and orientation as the tip:
-    simReal identityMatrix[12]={1.0,0.0,0.0,0.0,0.0,1.0,0.0,0.0,0.0,0.0,1.0,0.0};
-    ikSetObjectMatrix(embTarget,embTip,identityMatrix);
+    C7Vector identityTransf;
+    identityTransf.setIdentity();
+    ikSetObjectTransformation(targetHandle,tipHandle,&identityTransf);
 }
 
-void readShapeMatricesFromExtIkAndApplyToSim(int clientID,const std::vector<int>& embShapeHandles,int embBaseHandle,const std::vector<int>& simShapeHandles,int simBaseHandle,const std::vector<simReal>& corrMatrices)
+void readShapeTransformationsFromKinematicsRoutinesAndApplyToSim(int clientID,const std::vector<int>& shapeHandles,int baseHandle,const std::vector<int>& simShapeHandles,int simBaseHandle,const std::vector<C7Vector>& corrTransfs)
 {
     simxPauseCommunication(clientID,1); // we temporarily pause the communication with CoppeliaSim, so that all positions/orientations are set at the same time on the CoppeliaSim side
 
-    for (size_t i=0;i<embShapeHandles.size();i++)
+    for (size_t i=0;i<shapeHandles.size();i++)
     { // we skip the robot base. But we read/write everything relative to the robot base!
-        simReal embMatrix[12];
-        ikGetObjectMatrix(embShapeHandles[i],embBaseHandle,embMatrix); // we get the matrix of the ext. ik
-        simReal simMatrix[12];
-        ikMultiplyMatrices(embMatrix,&corrMatrices[0]+12*i,simMatrix); // we correct it
-        simReal quat[4];
-        simReal pos[3];
-        simReal euler[3];
-        ikMatrixToTransformation(simMatrix,pos,quat);
-        ikQuaternionToEulerAngles(quat,euler);
+        C7Vector transf;
+        ikGetObjectTransformation(shapeHandles[i],baseHandle,&transf);
+        C7Vector tr(transf*corrTransfs[i]);
+        C3Vector euler(tr.Q.getEulerAngles());
         float posf[3];
         float eulerf[3];
         for (size_t j=0;j<3;j++)
-        { // the external IK can use double precision!
-            posf[j]=(float)pos[j];
-            eulerf[j]=(float)euler[j];
+        { // the Coppelia Kinematics Routines can use double precision!
+            posf[j]=(float)tr.X(j);
+            eulerf[j]=(float)euler(j);
         }
         simxSetObjectPosition(clientID,simShapeHandles[i],simBaseHandle,posf,simx_opmode_oneshot);
         simxSetObjectOrientation(clientID,simShapeHandles[i],simBaseHandle,eulerf,simx_opmode_oneshot);
@@ -138,16 +135,15 @@ void readShapeMatricesFromExtIkAndApplyToSim(int clientID,const std::vector<int>
     simxPauseCommunication(clientID,0);
 }
 
-void getCorrectionMatrices(int clientID,const std::vector<int>& embShapeHandles,int embBaseHandle,const std::vector<int>& simShapeHandles,int simBaseHandle,std::vector<simReal>& corrMatrices)
-{ // Here we compute: corrMatrix=inv(embMatrix)*simMatrix. This is the correction matrix.
-    // Later, when we set the matrix to CoppeliaSim, we simply need to multiply the matrix from the external IK with that correction
-    // There is a correction matrix (i.e. 12 values) for each shape.
-    corrMatrices.clear();
-    for (size_t i=0;i<embShapeHandles.size();i++)
+void getCorrectionTransformations(int clientID,const std::vector<int>& shapeHandles,int baseHandle,const std::vector<int>& simShapeHandles,int simBaseHandle,std::vector<C7Vector>& corrTransfs)
+{ // Here we compute: corrTransfs=inv(transf)*tr. This is the correction transformation.
+    // Later, when we set the transformation to CoppeliaSim, we simply need to multiply the transformation from the external IK with that correction
+    // There is a correction transformation for each shape.
+    corrTransfs.clear();
+    for (size_t i=0;i<shapeHandles.size();i++)
     {
-        simReal embMatrix[12];
-        ikGetObjectMatrix(embShapeHandles[i],embBaseHandle,embMatrix);
-        simReal simMatrix[12];
+        C7Vector transf;
+        ikGetObjectTransformation(shapeHandles[i],baseHandle,&transf);
         float simPosf[3];
         float simEulerf[3];
         simxGetObjectPosition(clientID,simShapeHandles[i],simBaseHandle,simPosf,simx_opmode_blocking);
@@ -155,18 +151,15 @@ void getCorrectionMatrices(int clientID,const std::vector<int>& embShapeHandles,
         simReal simPos[3];
         simReal simEuler[3];
         for (size_t j=0;j<3;j++)
-        { // the external IK can use double precision!
+        { // the Coppelia Kinematics Routines can use double precision!
             simPos[j]=(simReal)simPosf[j];
             simEuler[j]=(simReal)simEulerf[j];
-        }       
-        simReal simQuat[4];
-        ikEulerAnglesToQuaternion(simEuler,simQuat);
-        ikTransformationToMatrix(simPos,simQuat,simMatrix);
-        simReal corrMatrix[12];
-        ikInvertMatrix(embMatrix);
-        ikMultiplyMatrices(embMatrix,simMatrix,corrMatrix);
-        for (size_t j=0;j<12;j++)
-            corrMatrices.push_back(corrMatrix[j]);
+        }
+        C7Vector tr;
+        tr.X=C3Vector(simPos);
+        tr.Q=C4Vector(C3Vector(simEuler));
+        C7Vector corrTr(transf.getInverse()*tr);
+        corrTransfs.push_back(corrTr);
     }
 }
 
@@ -184,7 +177,7 @@ int main(int argc, char* argv[])
     }
 
     // Prepare a vector with all the shape names in the robot (except for the fixed shape in the model).
-    // The names in the external IK file and the names in the CoppeliaSim scene should be the same:
+    // The names in the exported IK file and the names in the CoppeliaSim scene should be the same:
     std::vector<std::string> shapeNames;
     prepareShapeNames(shapeNames);
 
@@ -211,24 +204,32 @@ int main(int argc, char* argv[])
     }
 
     // Initialize the embedded robot model in the external IK:
-    ikLaunch();
-    ikStart(data,dataLength);
+    ikCreateEnvironment();
+    ikLoad(data,dataLength);
     delete[] data;
 
-    // Now retrieve a few handles FROM THE EXTERNAL IK FILE:
-    int embMotorHandles[4]; // the robot's motor handles
-    embMotorHandles[0]=ikGetObjectHandle("irb360_drivingJoint1"); // the motor of arm1
-    embMotorHandles[1]=ikGetObjectHandle("irb360_drivingJoint2"); // the motor of arm2
-    embMotorHandles[2]=ikGetObjectHandle("irb360_drivingJoint3"); // the motor of arm3
-    embMotorHandles[3]=ikGetObjectHandle("irb360_motor"); // the central motor (i.e. for the orientation)
-    int embBaseHandle=ikGetObjectHandle("irb360_base"); // the base object relative to which we do retrieve matrices
-    int embTip=ikGetObjectHandle("irb360_ikTip"); // the tip object
-    int embTarget=ikGetObjectHandle("irb360_ikTarget"); // the target object
-    int embMainIkGroup=ikGetIkGroupHandle("irb360_mainTask"); // the main IK handle. This is needed when we switch from IK to FK and vice-versa
+    // Now retrieve a few handles FROM THE EXPORTED IK FILE:
+    int motorHandles[4]; // the robot's motor handles
+    ikGetObjectHandle("irb360_drivingJoint1",motorHandles+0); // the motor of arm1
+    ikGetObjectHandle("irb360_drivingJoint2",motorHandles+1); // the motor of arm2
+    ikGetObjectHandle("irb360_drivingJoint3",motorHandles+2); // the motor of arm3
+    ikGetObjectHandle("irb360_motor",motorHandles+3); // the central motor (i.e. for the orientation)
+    int baseHandle;
+    ikGetObjectHandle("irb360_base",&baseHandle); // the base object relative to which we do retrieve matrices
+    int tipHandle;
+    ikGetObjectHandle("irb360_ikTip",&tipHandle); // the tip object
+    int targetHandle;
+    ikGetObjectHandle("irb360_ikTarget",&targetHandle); // the target object
+    int mainIkGroup;
+    ikGetIkGroupHandle("irb360_mainTask",&mainIkGroup); // the main IK handle. This is needed when we switch from IK to FK and vice-versa
 
-    std::vector<int> embShapeHandles; // all the shape handles. Those are needed in order to reflect the position/orientation of the shapes of the robot in the CoppeliaSim scene
+    std::vector<int> shapeHandles; // all the shape handles. Those are needed in order to reflect the position/orientation of the shapes of the robot in the CoppeliaSim scene
     for (size_t i=0;i<shapeNames.size();i++)
-        embShapeHandles.push_back(ikGetObjectHandle(shapeNames[i].c_str()));
+    {
+        int h;
+        ikGetObjectHandle(shapeNames[i].c_str(),&h);
+        shapeHandles.push_back(h);
+    }
 
     // Now connect to CoppeliaSim:
     int clientID=simxStart("127.0.0.1",portNb,true,true,2000,5);
@@ -244,13 +245,13 @@ int main(int argc, char* argv[])
         std::vector<int> simShapeHandles; // all CoppeliaSim scene handles that correspond to the shapeNames vector
         int simBaseHandle=getSimHandles(clientID,shapeNames,simShapeHandles,"irb360_base");
 
-        // Now retrieve all the correction matrices that link the reference frame of a given shape in the external IK,
-        // to its corresponding matrix in CoppeliaSim. Correction matrices are not needed when the shape's initially overlap.
-        std::vector<simReal> corrMatrices;
-        getCorrectionMatrices(clientID,embShapeHandles,embBaseHandle,simShapeHandles,simBaseHandle,corrMatrices);
+        // Now retrieve all the correction matrices that link the reference frame of a given shape in the Coppelia Kinematics Routines,
+        // to its corresponding matrix in CoppeliaSim. Correction matrices are not needed when the shapes initially overlap.
+        std::vector<C7Vector> corrTransformations;
+        getCorrectionTransformations(clientID,shapeHandles,baseHandle,simShapeHandles,simBaseHandle,corrTransformations);
 
         // Switch to FK mode:
-        switchToFk(embMotorHandles,embMainIkGroup,embTip);
+        switchToFk(motorHandles,mainIkGroup,tipHandle);
 
         simReal v=0.0;
         simReal a=0.0;
@@ -261,26 +262,20 @@ int main(int argc, char* argv[])
         {
             for (size_t fkc=0;fkc<60;fkc++)
             {
-
                 // Set the desired motor position:
-                ikSetJointPosition(embMotorHandles[kk],simReal(-45.0*3.1415*sin(float(fkc)*3.1415/60.0)/180.0));
+                ikSetJointPosition(motorHandles[kk],simReal(-45.0*3.1415*sin(float(fkc)*3.1415/60.0)/180.0));
                 rot+=simReal(0.01);
-                ikSetJointPosition(embMotorHandles[3],rot);
+                ikSetJointPosition(motorHandles[3],rot);
 
                 // calculate FK:
-                ikHandleIkGroup(sim_handle_all);
+                ikHandleIkGroup(ik_handle_all);
 
                 // Now we could read the end-effector position relative to the robot base:
-                // a) as pos and quaternion:
-                simReal embTipPos[3];
-                simReal embTipQuat[4];
-                ikGetObjectTransformation(embTip,embBaseHandle,embTipPos,embTipQuat);
-                // b) as matrix:
-                simReal embTipMatrix[12];
-                ikGetObjectMatrix(embTip,embBaseHandle,embTipMatrix);
+                C7Vector tipTransformation;
+                ikGetObjectTransformation(tipHandle,baseHandle,&tipTransformation);
 
                 // Read and apply all shape positions:
-                readShapeMatricesFromExtIkAndApplyToSim(clientID,embShapeHandles,embBaseHandle,simShapeHandles,simBaseHandle,corrMatrices);
+                readShapeTransformationsFromKinematicsRoutinesAndApplyToSim(clientID,shapeHandles,baseHandle,simShapeHandles,simBaseHandle,corrTransformations);
 
                 // Trigger next simulation step:
                 int r=simx_return_remote_error_flag; // means for next remote API function call: step not triggered
@@ -299,10 +294,10 @@ int main(int argc, char* argv[])
         }
 
         // Switch to IK mode:
-        switchToIk(embMotorHandles,embMainIkGroup,embTip,embTarget);
+        switchToIk(motorHandles,mainIkGroup,tipHandle,targetHandle);
 
-        simReal initialMatrix[12];
-        ikGetObjectMatrix(embTip,embBaseHandle,initialMatrix); // get the matrix relative to the robot base
+        C7Vector initialTransformation;
+        ikGetObjectTransformation(tipHandle,baseHandle,&initialTransformation); // get the transformation relative to the robot base
 
         while (simxGetConnectionId(clientID)!=-1)
         {
@@ -328,28 +323,24 @@ int main(int argc, char* argv[])
             simReal y=simReal(cos(v)*0.5);
             simReal z=simReal(sin(v*3.0)*0.1);
 
-            simReal newMatrix[12];
-            for (size_t i=0;i<12;i++)
-                newMatrix[i]=initialMatrix[i];
-            newMatrix[3]+=simReal(x*a*1.1);
-            newMatrix[7]+=simReal(y*a*1.1);
-            newMatrix[11]+=simReal(z*(1.0-a));
-            ikSetObjectMatrix(embTarget,embBaseHandle,newMatrix); // set the matrix relative to the robot base
+            C7Vector newTransformation(initialTransformation);
+            newTransformation.X+=C3Vector(simReal(x*a*1.1),simReal(y*a*1.1),simReal(z*(1.0-a)));
+            ikSetObjectTransformation(targetHandle,baseHandle,&newTransformation); // set the transformation relative to the robot base
 
             // Set the desired central motor rotation:
-            ikSetJointPosition(embMotorHandles[3],rot);
+            ikSetJointPosition(motorHandles[3],rot);
 
             // calculate IK:
-            ikHandleIkGroup(sim_handle_all);
+            ikHandleIkGroup(ik_handle_all);
 
             // Now we could read the computed motor angles:
-            simReal embMotorAngles[3];
-            ikGetJointPosition(embMotorHandles[0],embMotorAngles);
-            ikGetJointPosition(embMotorHandles[1],embMotorAngles+1);
-            ikGetJointPosition(embMotorHandles[2],embMotorAngles+2);
+            simReal motorAngles[3];
+            ikGetJointPosition(motorHandles[0],motorAngles);
+            ikGetJointPosition(motorHandles[1],motorAngles+1);
+            ikGetJointPosition(motorHandles[2],motorAngles+2);
 
             // Read and apply all shape positions:
-            readShapeMatricesFromExtIkAndApplyToSim(clientID,embShapeHandles,embBaseHandle,simShapeHandles,simBaseHandle,corrMatrices);
+            readShapeTransformationsFromKinematicsRoutinesAndApplyToSim(clientID,shapeHandles,baseHandle,simShapeHandles,simBaseHandle,corrTransformations);
 
             // Trigger next simulation step:
             int r=simx_return_remote_error_flag; // means for next remote API function call: step not triggered
@@ -362,7 +353,7 @@ int main(int argc, char* argv[])
         }
         simxFinish(clientID);
     }
-    ikShutDown();
+    ikEraseEnvironment();
     return(0);
 }
 
