@@ -74,7 +74,7 @@ HEADERS += \
     ../remoteApi/extApiInternal.h \
     ../remoteApi/extApi.h \
     ../coppeliaKinematicsRoutines/ik.h \
-    ../coppeliaKinematicsRoutines/app.h \
+    ../coppeliaKinematicsRoutines/environment.h \
     ../coppeliaKinematicsRoutines/serialization.h \
     ../coppeliaKinematicsRoutines/ikRoutines.h \
     ../coppeliaKinematicsRoutines/ikGroupContainer.h \
@@ -99,7 +99,7 @@ SOURCES += \
     ../remoteApi/extApiPlatform.c \
     ../remoteApi/extApi.c \
     ../coppeliaKinematicsRoutines/ik.cpp \
-    ../coppeliaKinematicsRoutines/app.cpp \
+    ../coppeliaKinematicsRoutines/environment.cpp \
     ../coppeliaKinematicsRoutines/serialization.cpp \
     ../coppeliaKinematicsRoutines/ikRoutines.cpp \
     ../coppeliaKinematicsRoutines/ikGroupContainer.cpp \
